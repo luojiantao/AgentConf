@@ -14,5 +14,5 @@
 | 路径 | 说明 |
 |------|------|
 | [AIUse/](./AIUse/) | 提示词六要素：Role / TechStack / Domain / Requirement / Constraints / Acceptance |
-| [AIUse/源码修改执行方案模板.md](./AIUse/源码修改执行方案模板.md) | 给 AI / 工程师直接改代码的执行方案空模板；`$ai-plan-doc-writer` 按同名 skill 内副本填写，两处必须同步 |
+| [AIUse/源码修改执行方案模板.md](./AIUse/源码修改执行方案模板.md) | 给 AI / 工程师直接改代码的 executor-ready 执行方案模板；由 `$ai-plan-converter` 按 skill 内副本填写，两处必须同步 |
 | [Godot/AI协作开发.md](./Godot/AI协作开发.md) | 多角色 AI 怎么配合做 Godot 游戏 / 改引擎；不替代 `Stack/godot.md` 与 `Actor/` |

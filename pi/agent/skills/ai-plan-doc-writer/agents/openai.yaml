@@ -1,7 +1,7 @@
 interface:
-  display_name: "代码修改方案文档"
-  short_description: "仅手动生成包含文件、类型骨架、函数与伪代码的代码方案"
-  default_prompt: "Use $ai-plan-doc-writer to create an executor-ready source-code modification plan that lists affected files, new class and struct skeletons, modified and new functions, and framework-level pseudocode for $ai-plan-executor."
+  display_name: "人类方案决策文档"
+  short_description: "仅手动生成供人类评审的方案决策文档"
+  default_prompt: "Use $ai-plan-doc-writer to create a human-readable decision plan that explains the problem, goals, alternatives, trade-offs, risks, recommendation, and items requiring human confirmation. After master confirms it, use $ai-plan-executor directly; $ai-plan-converter is optional when the execution details should be reviewed before implementation."
 
 policy:
-  allow_implicit_invocation: true
+  allow_implicit_invocation: false
