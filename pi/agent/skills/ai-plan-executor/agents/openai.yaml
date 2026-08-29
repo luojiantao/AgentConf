@@ -1,0 +1,6 @@
+interface:
+  display_name: "AI 方案执行器"
+  short_description: "校验仓库阶段角色索引并按方案安全完成实现、验证与交付"
+  default_prompt: "Use $ai-plan-executor to ask the user for an exact provider/model, delegate the complete plan to the global plan-executor subagent, wait for completion, support cancellation, then return the execution and validation report."
+policy:
+  allow_implicit_invocation: false

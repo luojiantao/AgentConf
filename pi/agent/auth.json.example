@@ -1,0 +1,22 @@
+{
+  "3r": {
+    "type": "api_key",
+    "key": "sk-REPLACE_ME"
+  },
+  "dragoncode": {
+    "type": "api_key",
+    "key": "sk-REPLACE_ME"
+  },
+  "dragoncode_gpt": {
+    "type": "api_key",
+    "key": "sk-REPLACE_ME"
+  },
+  "grok-relay": {
+    "type": "api_key",
+    "key": "sk-REPLACE_ME"
+  },
+  "xai": {
+    "type": "api_key",
+    "key": "sk-REPLACE_ME"
+  }
+}

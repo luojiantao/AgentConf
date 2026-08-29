@@ -1,0 +1,14 @@
+# secrets / private local config (public repo must not contain these)
+**/auth.json
+**/models.json
+
+# pi runtime / generated
+pi/agent/sessions/
+pi/agent/npm/node_modules/
+pi/agent/bin/*.exe
+
+# os junk
+nul
+Thumbs.db
+Desktop.ini
+.DS_Store

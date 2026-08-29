@@ -1,0 +1,7 @@
+interface:
+  display_name: "代码修改方案文档"
+  short_description: "仅手动生成包含文件、类型骨架、函数与伪代码的代码方案"
+  default_prompt: "Use $ai-plan-doc-writer to create an executor-ready source-code modification plan that lists affected files, new class and struct skeletons, modified and new functions, and framework-level pseudocode for $ai-plan-executor."
+
+policy:
+  allow_implicit_invocation: true

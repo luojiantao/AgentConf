@@ -1,0 +1,10 @@
+{
+  "defaultProvider": "grok-relay",
+  "defaultModel": "grok-4.6",
+  "defaultThinkingLevel": "xhigh",
+  "lastChangelogVersion": "0.84.4",
+  "packages": [
+    "npm:pi-mcp-adapter"
+  ],
+  "hideThinkingBlock": false
+}
