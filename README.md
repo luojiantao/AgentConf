@@ -9,10 +9,14 @@
 | 路径 | 说明 |
 |------|------|
 | `pi/agent/` | pi 全局配置快照，对应本机 `~/.pi/agent/` |
-| `pi/INSTALL.md` | 安装 pi：给 agent 的契约，只跑脚本、不要手拷 |
-| `install-pi.sh` / `install-pi.ps1` | 唯一安装动作 |
+| `docs/pi-install.md` | 安装：仓库 → 本机 |
+| `docs/pi-sync.md` | 同步：本机 → 仓库公开快照 |
+| `install-pi.sh` / `install-pi.ps1` | 安装脚本 |
 
-安装 pi 请读 [pi/INSTALL.md](pi/INSTALL.md)。
+## 文档
+
+- 安装 pi：[docs/pi-install.md](docs/pi-install.md)
+- 同步快照：[docs/pi-sync.md](docs/pi-sync.md)
 
 ## 不收录
 

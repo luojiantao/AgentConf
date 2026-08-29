@@ -5,6 +5,8 @@
 仓库快照：`pi/agent/`  
 本机目标：`~/.pi/agent/`（可用 `PI_CODING_AGENT_DIR` 或脚本 `--dest` 覆盖）
 
+本文只讲 **仓库 → 本机**。把本机配置收进仓库见 [pi-sync.md](pi-sync.md)，不要和安装混用。
+
 ## 命令
 
 在仓库根目录执行。
@@ -25,9 +27,9 @@ Git Bash / macOS / Linux：
 
 | 参数 | 作用 |
 |------|------|
-| `--skip-cli` | 只同步配置，不重装 pi CLI |
+| `--skip-cli` | 只写入配置，不重装 pi CLI |
 | `--dry-run` | 只打印将要做的事，不改本机 |
-| `--dest DIR` | 同步到指定目录，而不是 `~/.pi/agent` |
+| `--dest DIR` | 写入指定目录，而不是 `~/.pi/agent` |
 
 本机已有 pi CLI、只需刷新配置时用 `--skip-cli`。不确定时先 `--dry-run`。
 
@@ -38,6 +40,7 @@ Git Bash / macOS / Linux：
 - 不要把 `auth.json`、`models.json` 提交进本仓库
 - 不要另写一套「先拷 Actor、再拷 skills」的安装步骤
 - 脚本坏了再修脚本；不要用手工拷贝当安装路径
+- 不要用安装脚本做本机 → 仓库；那是 [pi-sync.md](pi-sync.md)
 
 ## 前置
 
@@ -47,10 +50,10 @@ Git Bash / macOS / Linux：
 ## 脚本会做
 
 1. 安装 `@earendil-works/pi-coding-agent`（`--skip-cli` 时跳过）
-2. 把 `pi/agent/` 里可公开内容同步到目标目录
+2. 把 `pi/agent/` 里可公开内容写入目标目录
 3. 按目标目录 `settings.json` 的 `packages` 执行 `pi install`
 
-同步时会覆盖目标里的可共享配置（角色、技能、扩展、提示词、`settings.json` 等）。
+安装时会覆盖目标里的可共享配置（角色、技能、扩展、提示词、`settings.json` 等）。
 
 ## 脚本不会做 / 不会覆盖
 
