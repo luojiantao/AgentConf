@@ -2,17 +2,36 @@
  * mouse-cursor — click to move the prompt caret, Ctrl+A to select all,
  * Backspace/Delete to clear the selection.
  *
+ * Inside Herdr (HERDR_ENV=1), regular mode also owns drag-select so the
+ * highlight can be white-on-black instead of Herdr's dark overlay.
+ * Fullscreen selection uses the same contrast by patching TuiAltScreen.
+ *
  * Auto-loaded from ~/.pi/agent/extensions/. Use /reload after editing.
  */
 
 import { CustomEditor, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { matchesKey, stripTerminalSequences, truncateToWidth, visibleWidth, type TUI } from "@earendil-works/pi-tui";
+import {
+	matchesKey,
+	sliceByColumn,
+	stripTerminalSequences,
+	truncateToWidth,
+	visibleWidth,
+	type TUI,
+} from "@earendil-works/pi-tui";
 
-const ENABLE_MOUSE = "\x1b[?1000h\x1b[?1006h";
-const DISABLE_MOUSE = "\x1b[?1006l\x1b[?1000l";
+// mintty Readline mouse button 1: click-to-caret without taking over wheel events.
+const ENABLE_READLINE_MOUSE = "\x1b[?2001h";
+const DISABLE_READLINE_MOUSE = "\x1b[?2001l";
+// xterm SGR drag reporting — Herdr forwards this into the pane and stops its own selection.
+const ENABLE_SGR_MOUSE = "\x1b[?1002h\x1b[?1006h";
+const DISABLE_SGR_MOUSE = "\x1b[?1002l\x1b[?1006l";
 const SGR_MOUSE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/;
 const CURSOR_MARKER = "\x1b_pi:c\x07";
+const HIGHLIGHT_ON = "\x1b[47;30m";
+const HIGHLIGHT_OFF = "\x1b[0m";
+const INSIDE_HERDR = process.env.HERDR_ENV === "1";
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+const patchedTuis = new WeakSet<object>();
 
 type EditorState = {
 	lines: string[];
@@ -20,7 +39,23 @@ type EditorState = {
 	cursorCol: number;
 };
 
+type Cell = { row: number; col: number };
+
+type ScreenSelection = {
+	anchor: Cell;
+	focus: Cell;
+	dragging: boolean;
+	pressing: boolean;
+};
+
 type InputListener = (data: string) => { consume?: boolean; data?: string } | undefined;
+
+type TuiInternals = TUI & {
+	previousLines?: string[];
+	previousViewportTop?: number;
+	applyLineResets?(lines: string[]): string[];
+	applySelectionHighlight?(text: string): string;
+};
 
 function editorState(editor: object): EditorState | undefined {
 	const state = (editor as { state?: EditorState }).state;
@@ -139,10 +174,118 @@ function visualRowOfCaret(state: EditorState | undefined, layoutWidth: number): 
 	return row;
 }
 
+function consumeEscape(text: string, pos: number): number {
+	if (text.charCodeAt(pos) !== 0x1b) return pos + 1;
+	const next = text[pos + 1];
+	if (next === "[") {
+		let i = pos + 2;
+		while (i < text.length && text.charCodeAt(i) < 0x40) i += 1;
+		return Math.min(i + 1, text.length);
+	}
+	if (next === "]") {
+		const bel = text.indexOf("\x07", pos + 2);
+		const st = text.indexOf("\x1b\\", pos + 2);
+		if (bel < 0 && st < 0) return text.length;
+		if (bel < 0) return st + 2;
+		if (st < 0) return bel + 1;
+		return Math.min(bel + 1, st + 2);
+	}
+	if (next === "_" || next === "P" || next === "^") {
+		const bel = text.indexOf("\x07", pos + 2);
+		const st = text.indexOf("\x1b\\", pos + 2);
+		if (bel < 0 && st < 0) return text.length;
+		if (bel < 0) return st + 2;
+		if (st < 0) return bel + 1;
+		return Math.min(bel + 1, st + 2);
+	}
+	return Math.min(pos + 2, text.length);
+}
+
+function applyHighContrastHighlight(text: string): string {
+	let result = HIGHLIGHT_ON;
+	let index = 0;
+	while (index < text.length) {
+		if (text.charCodeAt(index) === 0x1b) {
+			const end = consumeEscape(text, index);
+			const code = text.slice(index, end);
+			result += code;
+			if (code.endsWith("m")) result += HIGHLIGHT_ON;
+			index = end;
+			continue;
+		}
+		result += text[index];
+		index += 1;
+	}
+	return `${result}${HIGHLIGHT_OFF}`;
+}
+
+function orderedCells(a: Cell, b: Cell): [Cell, Cell] {
+	if (a.row < b.row || (a.row === b.row && a.col <= b.col)) return [a, b];
+	return [b, a];
+}
+
+function paintSelection(lines: string[], selection: ScreenSelection | undefined): string[] {
+	if (!selection?.dragging) return lines;
+	const [start, end] = orderedCells(selection.anchor, selection.focus);
+	if (start.row === end.row && start.col === end.col) return lines;
+	return lines.map((line, row) => {
+		if (row < start.row || row > end.row) return line;
+		const width = visibleWidth(line);
+		if (width <= 0) return line;
+		const from = row === start.row ? Math.min(start.col, width - 1) : 0;
+		const to = row === end.row ? Math.min(end.col, width - 1) : width - 1;
+		if (to < from) return line;
+		const before = sliceByColumn(line, 0, from, true);
+		const selected = sliceByColumn(line, from, to - from + 1, true);
+		const after = sliceByColumn(line, to + 1, Math.max(0, width - (to + 1)), true);
+		return `${before}${applyHighContrastHighlight(selected)}${after}`;
+	});
+}
+
+function extractSelectionText(lines: string[], selection: ScreenSelection): string {
+	const [start, end] = orderedCells(selection.anchor, selection.focus);
+	const out: string[] = [];
+	for (let row = start.row; row <= end.row; row++) {
+		const line = lines[row] ?? "";
+		const width = visibleWidth(line);
+		const from = row === start.row ? start.col : 0;
+		const to = row === end.row ? end.col : Math.max(0, width - 1);
+		out.push(stripTerminalSequences(sliceByColumn(line, from, Math.max(0, to - from + 1), true)));
+	}
+	return out.join("\n").replace(/[ \t]+$/gm, "");
+}
+
+function copyWithOsc52(tui: TUI, text: string): void {
+	if (!text) return;
+	const encoded = Buffer.from(text, "utf8").toString("base64");
+	tui.terminal.write(`\x1b]52;c;${encoded}\x07`);
+}
+
+function patchFullscreenSelection(tui: TUI): void {
+	if (tui.mode !== "fullscreen" || patchedTuis.has(tui)) return;
+	const bag = tui as TuiInternals;
+	if (typeof bag.applySelectionHighlight !== "function") return;
+	bag.applySelectionHighlight = applyHighContrastHighlight;
+	patchedTuis.add(tui);
+}
+
+function hookRegularSelectionPaint(tui: TUI, getSelection: () => ScreenSelection | undefined): void {
+	if (tui.mode !== "regular" || patchedTuis.has(tui)) return;
+	const proto = Object.getPrototypeOf(tui) as TuiInternals;
+	if (typeof proto.applyLineResets !== "function") return;
+	const orig = proto.applyLineResets;
+	(tui as TuiInternals).applyLineResets = function patchedApplyLineResets(this: TUI, lines: string[]) {
+		return paintSelection(orig.call(this, lines), getSelection());
+	};
+	patchedTuis.add(tui);
+}
+
 class MouseCursorEditor extends CustomEditor {
 	private selectedAll = false;
 	private mouseEnabled = false;
+	private sgrMouseEnabled = false;
 	private editorMouseActive = false;
+	private screenSelection: ScreenSelection | undefined;
 	private unhookInput: (() => void) | undefined;
 
 	constructor(...args: ConstructorParameters<typeof CustomEditor>) {
@@ -157,19 +300,47 @@ class MouseCursorEditor extends CustomEditor {
 	disposeMouse(): void {
 		this.unhookInput?.();
 		this.unhookInput = undefined;
+		if (this.sgrMouseEnabled) {
+			this.tui.terminal.write(DISABLE_SGR_MOUSE);
+			this.sgrMouseEnabled = false;
+		}
 		if (!this.mouseEnabled) return;
-		if (this.tui.mode !== "fullscreen") this.tui.terminal.write(DISABLE_MOUSE);
+		if (this.tui.mode !== "fullscreen") this.tui.terminal.write(DISABLE_READLINE_MOUSE);
 		this.mouseEnabled = false;
 	}
 
 	ensureMouse(): void {
-		if (this.tui.mode === "fullscreen") return;
-		this.tui.terminal.write(ENABLE_MOUSE);
+		if (this.tui.mode === "fullscreen") {
+			if (this.mouseEnabled) this.tui.terminal.write(DISABLE_READLINE_MOUSE);
+			if (this.sgrMouseEnabled) this.tui.terminal.write(DISABLE_SGR_MOUSE);
+			this.mouseEnabled = false;
+			this.sgrMouseEnabled = false;
+			patchFullscreenSelection(this.tui);
+			return;
+		}
+		if (INSIDE_HERDR) {
+			if (this.mouseEnabled) this.tui.terminal.write(DISABLE_READLINE_MOUSE);
+			this.mouseEnabled = false;
+			hookRegularSelectionPaint(this.tui, () => this.screenSelection);
+			if (this.sgrMouseEnabled) return;
+			this.tui.terminal.write(ENABLE_SGR_MOUSE);
+			this.sgrMouseEnabled = true;
+			return;
+		}
+		if (this.sgrMouseEnabled) this.tui.terminal.write(DISABLE_SGR_MOUSE);
+		this.sgrMouseEnabled = false;
+		if (this.mouseEnabled) return;
+		this.tui.terminal.write(ENABLE_READLINE_MOUSE);
 		this.mouseEnabled = true;
 	}
 
 	handleInput(data: string): void {
 		if (this.handleMouseInput(data)) return;
+
+		if (this.screenSelection && !this.screenSelection.pressing) {
+			this.screenSelection = undefined;
+			this.tui.requestRender();
+		}
 
 		if (matchesKey(data, "ctrl+a")) {
 			this.selectedAll = this.getText().length > 0;
@@ -207,7 +378,7 @@ class MouseCursorEditor extends CustomEditor {
 		const lines = super.render(width);
 		if (!this.selectedAll || lines.length < 3) return lines;
 		for (let i = 1; i < lines.length - 1; i++) {
-			lines[i] = `\x1b[7m${lines[i]}\x1b[0m`;
+			lines[i] = applyHighContrastHighlight(lines[i]!);
 		}
 		const label = " ALL ";
 		const last = lines.length - 1;
@@ -226,7 +397,16 @@ class MouseCursorEditor extends CustomEditor {
 		const y = Number.parseInt(match[3], 10) - 1;
 		const release = match[4] === "m";
 		const motion = (button & 32) !== 0;
-		const primary = (button & 3) === 0;
+		const wheel = (button & 64) !== 0;
+		const primary = !wheel && (button & 3) === 0;
+
+		if (this.tui.mode !== "fullscreen") {
+			if (!INSIDE_HERDR) return false;
+			return this.handleRegularHerdrMouse({ x, y, release, motion, wheel, primary });
+		}
+
+		// Let TuiAltScreen route fullscreen wheel events to its ScrollView.
+		if (wheel) return false;
 
 		if (release) {
 			const active = this.editorMouseActive;
@@ -245,6 +425,65 @@ class MouseCursorEditor extends CustomEditor {
 		this.editorMouseActive = true;
 		this.moveCaretToScreen(x, y);
 		return true;
+	}
+
+	private handleRegularHerdrMouse(event: {
+		x: number;
+		y: number;
+		release: boolean;
+		motion: boolean;
+		wheel: boolean;
+		primary: boolean;
+	}): boolean {
+		if (event.wheel) return true;
+		if (!event.primary && !event.release) return false;
+
+		const cell = this.screenCell(event.x, event.y);
+		if (event.release) {
+			const selection = this.screenSelection;
+			this.editorMouseActive = false;
+			if (!selection?.pressing) return Boolean(selection);
+			selection.pressing = false;
+			if (!selection.dragging) {
+				this.screenSelection = undefined;
+				if (this.isClickInEditor(event.x, event.y)) this.moveCaretToScreen(event.x, event.y);
+				this.tui.requestRender();
+				return true;
+			}
+			const lines = (this.tui as TuiInternals).previousLines ?? [];
+			copyWithOsc52(this.tui, extractSelectionText(lines, selection));
+			this.tui.requestRender();
+			return true;
+		}
+
+		if (event.motion || this.screenSelection?.pressing) {
+			if (!this.screenSelection?.pressing) return false;
+			this.screenSelection.focus = cell;
+			if (cell.row !== this.screenSelection.anchor.row || cell.col !== this.screenSelection.anchor.col) {
+				this.screenSelection.dragging = true;
+			}
+			this.tui.requestRender();
+			return true;
+		}
+
+		this.selectedAll = false;
+		this.screenSelection = { anchor: cell, focus: cell, dragging: false, pressing: true };
+		if (this.isClickInEditor(event.x, event.y)) {
+			this.editorMouseActive = true;
+			this.moveCaretToScreen(event.x, event.y);
+		}
+		this.tui.requestRender();
+		return true;
+	}
+
+	private screenCell(screenX: number, screenY: number): Cell {
+		const bag = this.tui as TuiInternals;
+		const top = bag.previousViewportTop ?? 0;
+		const lines = bag.previousLines ?? [];
+		const row = Math.max(0, Math.min(top + screenY, Math.max(0, lines.length - 1)));
+		const width = visibleWidth(lines[row] ?? "");
+		const col = Math.max(0, Math.min(screenX, Math.max(0, width - 1)));
+		return { row, col };
 	}
 
 	private editorGeometry(): { top: number; height: number; lines: string[] } | undefined {

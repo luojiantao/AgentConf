@@ -1,10 +1,11 @@
 {
-  "defaultProvider": "grok-relay",
+  "defaultProvider": "xai",
   "defaultModel": "grok-4.6",
   "defaultThinkingLevel": "xhigh",
   "lastChangelogVersion": "0.84.4",
   "packages": [
     "npm:pi-mcp-adapter"
   ],
-  "hideThinkingBlock": false
+  "hideThinkingBlock": false,
+  "defaultTools": ["read", "powershell", "edit", "write"]
 }
