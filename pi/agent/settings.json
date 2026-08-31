@@ -7,5 +7,7 @@
     "npm:pi-mcp-adapter"
   ],
   "hideThinkingBlock": false,
-  "defaultTools": ["read", "powershell", "edit", "write"]
+  "defaultTools": ["read", "powershell", "edit", "write"],
+       "tuiMode": "fullscreen",
+     "fullscreenScrollbar": "always"
 }

@@ -2,9 +2,11 @@
  * mouse-cursor — click to move the prompt caret, Ctrl+A to select all,
  * Backspace/Delete to clear the selection.
  *
- * Inside Herdr (HERDR_ENV=1), regular mode also owns drag-select so the
- * highlight can be white-on-black instead of Herdr's dark overlay.
- * Fullscreen selection uses the same contrast by patching TuiAltScreen.
+ * In Herdr, regular mode leaves mouse ownership to Herdr so host scrollback
+ * remains usable. Fullscreen mode owns wheel scrolling while this extension
+ * retains click-to-caret and high-contrast selection.
+ *
+ * Project-local: auto-loaded from .pi/extensions/ after this project is trusted.
  *
  * Auto-loaded from ~/.pi/agent/extensions/. Use /reload after editing.
  */
@@ -22,8 +24,8 @@ import {
 // mintty Readline mouse button 1: click-to-caret without taking over wheel events.
 const ENABLE_READLINE_MOUSE = "\x1b[?2001h";
 const DISABLE_READLINE_MOUSE = "\x1b[?2001l";
-// xterm SGR drag reporting — Herdr forwards this into the pane and stops its own selection.
-const ENABLE_SGR_MOUSE = "\x1b[?1002h\x1b[?1006h";
+// Clear SGR drag reporting left by older extension revisions. In regular Herdr
+// mode it makes Herdr reset pane scrollback before forwarding wheel input.
 const DISABLE_SGR_MOUSE = "\x1b[?1002l\x1b[?1006l";
 const SGR_MOUSE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/;
 const CURSOR_MARKER = "\x1b_pi:c\x07";
@@ -50,9 +52,31 @@ type ScreenSelection = {
 
 type InputListener = (data: string) => { consume?: boolean; data?: string } | undefined;
 
+type LayoutRect = {
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+};
+
+type LayoutBox = {
+	rect?: LayoutRect;
+	lines?: string[];
+	children?: LayoutBox[];
+};
+
+type EditorGeometry = {
+	left: number;
+	top: number;
+	width: number;
+	height: number;
+	lines: string[];
+};
+
 type TuiInternals = TUI & {
 	previousLines?: string[];
 	previousViewportTop?: number;
+	currentLayout?: { root?: LayoutBox };
 	applyLineResets?(lines: string[]): string[];
 	applySelectionHighlight?(text: string): string;
 };
@@ -116,6 +140,46 @@ function prependInputListener(tui: TUI, listener: InputListener): () => void {
 	return () => {
 		set.delete(listener);
 	};
+}
+
+function findEditorLayoutBox(tui: TUI, editorLines: string[]): EditorGeometry | undefined {
+	if (editorLines.length === 0) return undefined;
+	const root = (tui as TuiInternals).currentLayout?.root;
+	if (!root) return undefined;
+	const needle = editorLines.map(normalizeLine);
+	let match: EditorGeometry | undefined;
+
+	const visit = (box: LayoutBox): void => {
+		const rect = box.rect;
+		const lines = box.lines;
+		if (rect && lines && rect.width > 0 && rect.height > 0) {
+			const hay = lines.map(normalizeLine);
+			for (let i = hay.length - needle.length; i >= 0; i--) {
+				let matches = true;
+				for (let j = 0; j < needle.length; j++) {
+					if (hay[i + j] !== needle[j]) {
+						matches = false;
+						break;
+					}
+				}
+				if (matches) {
+					const candidate = {
+						left: rect.x,
+						top: rect.y + i,
+						width: rect.width,
+						height: needle.length,
+						lines: editorLines,
+					};
+					if (!match || candidate.top > match.top) match = candidate;
+					break;
+				}
+			}
+		}
+		for (const child of box.children ?? []) visit(child);
+	};
+
+	visit(root);
+	return match;
 }
 
 function findEditorTop(tui: TUI, editorLines: string[], state: EditorState | undefined): number | undefined {
@@ -262,11 +326,11 @@ function copyWithOsc52(tui: TUI, text: string): void {
 }
 
 function patchFullscreenSelection(tui: TUI): void {
-	if (tui.mode !== "fullscreen" || patchedTuis.has(tui)) return;
+	if (tui.mode !== "fullscreen") return;
 	const bag = tui as TuiInternals;
+	if (bag.applySelectionHighlight === applyHighContrastHighlight) return;
 	if (typeof bag.applySelectionHighlight !== "function") return;
 	bag.applySelectionHighlight = applyHighContrastHighlight;
-	patchedTuis.add(tui);
 }
 
 function hookRegularSelectionPaint(tui: TUI, getSelection: () => ScreenSelection | undefined): void {
@@ -283,26 +347,38 @@ function hookRegularSelectionPaint(tui: TUI, getSelection: () => ScreenSelection
 class MouseCursorEditor extends CustomEditor {
 	private selectedAll = false;
 	private mouseEnabled = false;
-	private sgrMouseEnabled = false;
+	private herdrMouseReportingDisabled = false;
 	private editorMouseActive = false;
 	private screenSelection: ScreenSelection | undefined;
+	private readonly inputListener: InputListener;
+	private boundInputListeners: Set<InputListener> | undefined;
 	private unhookInput: (() => void) | undefined;
 
 	constructor(...args: ConstructorParameters<typeof CustomEditor>) {
 		super(...args);
-		this.unhookInput = prependInputListener(this.tui, (data) => {
+		this.inputListener = (data) => {
 			if (this.handleMouseInput(data)) return { consume: true };
 			return undefined;
-		});
+		};
+		this.bindMouseInputListener();
 		this.ensureMouse();
+	}
+
+	private bindMouseInputListener(): void {
+		const set = (this.tui as unknown as { inputListeners?: Set<InputListener> }).inputListeners;
+		if (set && set === this.boundInputListeners) return;
+		this.unhookInput?.();
+		this.unhookInput = prependInputListener(this.tui, this.inputListener);
+		this.boundInputListeners = set;
 	}
 
 	disposeMouse(): void {
 		this.unhookInput?.();
 		this.unhookInput = undefined;
-		if (this.sgrMouseEnabled) {
+		this.boundInputListeners = undefined;
+		if (this.herdrMouseReportingDisabled) {
 			this.tui.terminal.write(DISABLE_SGR_MOUSE);
-			this.sgrMouseEnabled = false;
+			this.herdrMouseReportingDisabled = false;
 		}
 		if (!this.mouseEnabled) return;
 		if (this.tui.mode !== "fullscreen") this.tui.terminal.write(DISABLE_READLINE_MOUSE);
@@ -310,25 +386,28 @@ class MouseCursorEditor extends CustomEditor {
 	}
 
 	ensureMouse(): void {
+		this.bindMouseInputListener();
 		if (this.tui.mode === "fullscreen") {
 			if (this.mouseEnabled) this.tui.terminal.write(DISABLE_READLINE_MOUSE);
-			if (this.sgrMouseEnabled) this.tui.terminal.write(DISABLE_SGR_MOUSE);
 			this.mouseEnabled = false;
-			this.sgrMouseEnabled = false;
+			this.herdrMouseReportingDisabled = false;
 			patchFullscreenSelection(this.tui);
 			return;
 		}
 		if (INSIDE_HERDR) {
 			if (this.mouseEnabled) this.tui.terminal.write(DISABLE_READLINE_MOUSE);
 			this.mouseEnabled = false;
-			hookRegularSelectionPaint(this.tui, () => this.screenSelection);
-			if (this.sgrMouseEnabled) return;
-			this.tui.terminal.write(ENABLE_SGR_MOUSE);
-			this.sgrMouseEnabled = true;
+
+			// Herdr routes any xterm mouse-reporting mode through the pane. Its
+			// wheel route resets host scrollback before Pi receives the report, so
+			// regular mode must leave mouse ownership with Herdr.
+			if (!this.herdrMouseReportingDisabled) {
+				this.tui.terminal.write(DISABLE_SGR_MOUSE);
+				this.herdrMouseReportingDisabled = true;
+			}
 			return;
 		}
-		if (this.sgrMouseEnabled) this.tui.terminal.write(DISABLE_SGR_MOUSE);
-		this.sgrMouseEnabled = false;
+		this.herdrMouseReportingDisabled = false;
 		if (this.mouseEnabled) return;
 		this.tui.terminal.write(ENABLE_READLINE_MOUSE);
 		this.mouseEnabled = true;
@@ -408,23 +487,18 @@ class MouseCursorEditor extends CustomEditor {
 		// Let TuiAltScreen route fullscreen wheel events to its ScrollView.
 		if (wheel) return false;
 
+		// Move the prompt caret first, then leave the complete gesture to
+		// TuiAltScreen so its white-on-black selection remains available.
 		if (release) {
-			const active = this.editorMouseActive;
 			this.editorMouseActive = false;
-			return active;
+			return false;
 		}
 		if (!primary) return false;
-
-		if (motion) {
-			if (!this.editorMouseActive) return false;
-			this.moveCaretToScreen(x, y);
-			return true;
-		}
-
+		if (motion) return false;
 		if (!this.isClickInEditor(x, y)) return false;
-		this.editorMouseActive = true;
+		this.editorMouseActive = false;
 		this.moveCaretToScreen(x, y);
-		return true;
+		return false;
 	}
 
 	private handleRegularHerdrMouse(event: {
@@ -435,6 +509,8 @@ class MouseCursorEditor extends CustomEditor {
 		wheel: boolean;
 		primary: boolean;
 	}): boolean {
+		// A buffered SGR report can arrive while the old mode is being disabled.
+		// Consume it so the editor never receives a mouse escape sequence.
 		if (event.wheel) return true;
 		if (!event.primary && !event.release) return false;
 
@@ -486,30 +562,30 @@ class MouseCursorEditor extends CustomEditor {
 		return { row, col };
 	}
 
-	private editorGeometry(): { top: number; height: number; lines: string[] } | undefined {
+	private editorGeometry(): EditorGeometry | undefined {
 		const cols = this.tui.terminal.columns;
 		const lines = super.render(cols);
 		if (lines.length === 0) return undefined;
+		const fromLayout = findEditorLayoutBox(this.tui, lines);
+		if (fromLayout) return fromLayout;
 		const top = findEditorTop(this.tui, lines, editorState(this));
 		if (top === undefined) return undefined;
-		return { top, height: lines.length, lines };
+		return { left: 0, top, width: cols, height: lines.length, lines };
 	}
 
-	private isClickInEditor(_x: number, y: number): boolean {
+	private isClickInEditor(x: number, y: number): boolean {
 		const box = this.editorGeometry();
 		if (!box) return false;
-		return y >= box.top && y < box.top + box.height;
+		return x >= box.left && x < box.left + box.width && y >= box.top && y < box.top + box.height;
 	}
 
 	private moveCaretToScreen(screenX: number, screenY: number): void {
 		const box = this.editorGeometry();
 		if (!box) return;
-		const localY = screenY - box.top;
-		const contentY = localY - 1;
+		const contentY = screenY - box.top - 1;
 		if (contentY < 0 || contentY >= box.height - 2) return;
 
-		const cols = this.tui.terminal.columns;
-		const layoutWidth = Math.max(1, cols - 1);
+		const layoutWidth = Math.max(1, box.width - 1);
 		const visual: Array<{ line: number; start: number; text: string }> = [];
 		for (const [line, text] of this.getLines().entries()) {
 			for (const chunk of wrapLogicalLine(text, layoutWidth)) {
@@ -519,7 +595,7 @@ class MouseCursorEditor extends CustomEditor {
 		if (visual.length === 0) visual.push({ line: 0, start: 0, text: "" });
 
 		const row = visual[Math.max(0, Math.min(visual.length - 1, contentY))]!;
-		const col = row.start + colFromVisual(row.text, screenX);
+		const col = row.start + colFromVisual(row.text, Math.max(0, screenX - box.left));
 		this.selectedAll = false;
 		const state = editorState(this);
 		if (!state) return;
